@@ -1,6 +1,3 @@
-// MIT License
-// Copyright (c) 2020 NedMakesGames
-// Modified for procedural flower quad rendering
 
 using System.Collections;
 using System.Collections.Generic;
