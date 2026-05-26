@@ -1,0 +1,147 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel Main
+#pragma warning (disable : 3571)
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "NMGGrassBladeComputeHelpers.hlsl"
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+
+struct SourceVertex {
+    float3 positionOS;
+};
+
+StructuredBuffer<SourceVertex> _SourceVertices;
+StructuredBuffer<int> _SourceTriangles;
+
+struct DrawVertex {
+    float3 positionWS;
+    float2 uv;
+    float windStrength;
+};
+
+struct DrawTriangle {
+    float3 lightingNormalWS;
+    DrawVertex vertices[3];
+};
+
+AppendStructuredBuffer<DrawTriangle> _DrawTriangles;
+
+struct IndirectArgs{
+    uint numVerticesPerInstance;
+    uint numInstances;
+    uint startVerticesIndex;
+    uint startInstanceIndex;
+};
+
+RWStructuredBuffer<IndirectArgs> _IndirectArgsBuffer;
+
+int _NumSourceTriangles;
+float _FlowerSize;
+float _FlowerSizeVariance;
+
+float _WindTimeMult;
+float _WindPosMult;
+float _WindAmplitude;
+
+float4 _CameraPosition;
+float4x4 _LocalToWorld;
+float _FlowerDensity;
+
+float _Seed;
+
+float hash(float2 p){
+    p = frac(p * float2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return frac(p.x * p.y);
+}
+
+float gradientNoise(float2 p)
+{
+    float2 i = floor(p);
+    float2 f = frac(p);
+    float2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash(i + float2(0, 0));
+    float b = hash(i + float2(1, 0));
+    float c = hash(i + float2(0, 1));
+    float d = hash(i + float2(1, 1));
+
+    return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
+
+}
+
+float GetWindStrength(float3 positionWS)
+{
+    float2 windDir = normalize(float2(1, 0.3));
+    float2 windUV = positionWS.xz * _WindPosMult;
+
+    windUV -= windDir * _Time.y * _WindTimeMult;
+    return gradientNoise(windUV);
+}
+
+[numthreads(128, 1, 1)]
+void Main(uint3 id : SV_DispatchThreadID) {
+    if ((int)id.x >= _NumSourceTriangles) return;
+
+    int triStart = id.x * 3;
+    // Get triangle center in world space — that's where the flower spawns
+    float3 a = mul(_LocalToWorld, float4(_SourceVertices[_SourceTriangles[triStart]].positionOS, 1)).xyz;
+    float3 b = mul(_LocalToWorld, float4(_SourceVertices[_SourceTriangles[triStart + 1]].positionOS, 1)).xyz;
+    float3 c = mul(_LocalToWorld, float4(_SourceVertices[_SourceTriangles[triStart + 2]].positionOS, 1)).xyz;
+
+    float3 anchorWS = (a + b + c) / 3.0;
+
+    // Clumping: low-frequency noise creates patches, hash adds per-flower randomness
+    // Low-frequency noise — controls WHERE patches form across the mesh
+    float patch = gradientNoise(anchorWS.xz * 0.05 + _Seed);
+
+    if (patch < 0.55) return;
+
+    float localProb = hash(anchorWS.xz + 17.0 + _Seed);
+    if (localProb > _FlowerDensity) return;
+
+    // Random size variation per flower
+    float size = _FlowerSize + randNegative1to1(anchorWS + _Seed, 0) * _FlowerSizeVariance;
+    // Wind strength at this flower's position
+    float windStrength = GetWindStrength(anchorWS);
+
+    // Billboard: build right/up axes that face the camera
+    float3 toCamera = normalize(_CameraPosition.xyz - anchorWS);
+    float3 up = float3(0, 1, 0);
+    float3 right = normalize(cross(up, toCamera));
+    // Recompute up to be perpendicular to the camera direction (so the quad always faces it)
+    up = normalize(cross(toCamera, right));
+
+    // Wind pushes the top of the quad horizontally — bend the up vector
+    float3 windDir = float3(1, 0, 0.3);
+    up += windDir * windStrength * _WindAmplitude;
+    up = normalize(up);
+
+    // Build the 4 corners of the quad
+    // Bottom-left, bottom-right, top-left, top-right
+    float halfSize = size * 0.5;
+    float3 bl = anchorWS - right * halfSize;
+    float3 br = anchorWS + right * halfSize;
+    float3 tl = anchorWS - right * halfSize + up * size;
+    float3 tr = anchorWS + right * halfSize + up * size;
+
+    // Normal for lighting — face the camera
+    float3 normalWS = toCamera;
+
+    // Two triangles per quad
+    DrawTriangle t1 = (DrawTriangle)0;
+    t1.lightingNormalWS = normalWS;
+    t1.vertices[0].positionWS = bl; t1.vertices[0].uv = float2(0, 0); t1.vertices[0].windStrength = windStrength;
+    t1.vertices[1].positionWS = tl; t1.vertices[1].uv = float2(0, 1); t1.vertices[1].windStrength = windStrength;
+    t1.vertices[2].positionWS = tr; t1.vertices[2].uv = float2(1, 1); t1.vertices[2].windStrength = windStrength;
+    _DrawTriangles.Append(t1);
+
+    DrawTriangle t2 = (DrawTriangle)0;
+    t2.lightingNormalWS = normalWS;
+    t2.vertices[0].positionWS = bl; t2.vertices[0].uv = float2(0, 0); t2.vertices[0].windStrength = windStrength;
+    t2.vertices[1].positionWS = tr; t2.vertices[1].uv = float2(1, 1); t2.vertices[1].windStrength = windStrength;
+    t2.vertices[2].positionWS = br; t2.vertices[2].uv = float2(1, 0); t2.vertices[2].windStrength = windStrength;
+    _DrawTriangles.Append(t2);
+
+    InterlockedAdd(_IndirectArgsBuffer[0].numVerticesPerInstance, 6);
+}
