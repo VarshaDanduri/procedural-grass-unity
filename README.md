@@ -1,5 +1,4 @@
 
-
 https://github.com/user-attachments/assets/3e002e1d-6627-4f78-9494-0dc68d8de98f
 # procedural-grass-unity
 
@@ -13,3 +12,7 @@ A Unity URP grass system that generates all blade geometry on the GPU in paralle
 - **Per-blade shading** with directional light + ambient, including wind-based shading variation
 - **Distance-based LOD** — blades smoothly simplify as they get farther from the camera
 - **Adjustable blade resolution** — control segment count to balance quality vs performance
+
+## Demo
+https://github.com/user-attachments/assets/94c34348-5c4f-4cd0-a370-ff6d08c018eb
+
